@@ -9,7 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { LOOPBACK } from "./network.mjs";
 
 const WINDOWS = process.platform === "win32";
-const BOOT_TIMEOUT = 120000;
+const BOOT_STALL = 120000;
+const BOOT_TIMEOUT = 180000;
 const TOOL_TIMEOUT = 220000;
 const CONNECTION_TIMEOUT = 5000;
 const SESSION_GRACE = 3000;
@@ -32,16 +33,84 @@ function keyFor(value) {
   return createHash("sha256").update(WINDOWS ? value.toLowerCase() : value).digest("hex").slice(0, 24);
 }
 
+export function waitForBootstrap(streams, signal, { stallMs = BOOT_STALL, maxMs = BOOT_TIMEOUT, onProgress = () => {} } = {}) {
+  const started = Date.now();
+  let lastProgress;
+  const warnings = [];
+  return new Promise((resolve, reject) => {
+    let timer;
+    const handlers = [];
+    function cleanup() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", aborted);
+      for (const [stream, handler] of handlers) {
+        stream.removeListener("data", handler);
+        stream.resume();
+      }
+    }
+    function fail(message) {
+      cleanup();
+      const stage = lastProgress ? " Last stage: " + lastProgress.percent + "% " + lastProgress.description + "." : "";
+      const warning = warnings.length ? "\n" + warnings.join("\n") : "";
+      reject(new Error(message + stage + warning));
+    }
+    function aborted() {
+      fail(signal.reason?.message ?? "Tor startup was interrupted.");
+    }
+    function reschedule() {
+      clearTimeout(timer);
+      const remaining = maxMs - (Date.now() - started);
+      timer = setTimeout(() => {
+        if (Date.now() - started >= maxMs) fail("Tor hit the " + maxMs / 1000 + "s startup deadline.");
+        else fail("Tor bootstrap stalled for " + stallMs / 1000 + "s.");
+      }, Math.max(0, Math.min(stallMs, remaining)));
+    }
+    function line(text) {
+      const match = text.match(/\bBootstrapped (\d{1,3})%(?: \([\w-]+\))?:\s*(.+)$/);
+      if (match) {
+        const percent = Number(match[1]);
+        if (percent > 100 || percent <= (lastProgress?.percent ?? -1)) return;
+        lastProgress = { percent, description: match[2].slice(0, 160) };
+        onProgress(lastProgress);
+        if (percent === 100) {
+          cleanup();
+          resolve();
+        } else {
+          reschedule();
+        }
+      } else if (/\[(warn|err)\]/.test(text)) {
+        warnings.push(text.slice(0, 360));
+        if (warnings.length > 3) warnings.shift();
+      }
+    }
+    if (signal.aborted) return aborted();
+    signal.addEventListener("abort", aborted, { once: true });
+    reschedule();
+    for (const stream of streams) {
+      let buffer = "";
+      const handler = (chunk) => {
+        const lines = (buffer + chunk).split(/\r?\n/);
+        buffer = lines.pop().slice(-4096);
+        for (const text of lines) line(text);
+      };
+      handlers.push([stream, handler]);
+      stream.setEncoding("utf8").on("data", handler);
+    }
+  });
+}
+
 export function configuration(here) {
   const socksPort = Number(process.env.TOR_WEB_SOCKS_PORT || 9062);
   if (!Number.isInteger(socksPort) || socksPort < 1 || socksPort > 65533) throw new Error("invalid TOR_WEB_SOCKS_PORT");
+  const searchFallback = process.env.TOR_WEB_SEARCH_FALLBACK || "off";
+  if (!["off", "exa"].includes(searchFallback)) throw new Error("TOR_WEB_SEARCH_FALLBACK must be off or exa");
   const idleMs = Number(process.env.TOR_WEB_IDLE_MINUTES || 10) * 60000;
   if (!Number.isFinite(idleMs) || idleMs <= 0 || idleMs > 2147483647) throw new Error("invalid TOR_WEB_IDLE_MINUTES");
   const data = canonicalPath(path.resolve(process.env.TOR_WEB_DATA_DIR || path.join(here, "data")));
   const torDir = path.resolve(process.env.TOR_WEB_TOR_DIR || path.join(os.homedir(), "Desktop", "Tor Browser", "Browser", "TorBrowser", "Tor"));
   const key = keyFor([fs.realpathSync(here), data, os.homedir()].join("\n"));
   return {
-    here, data, torDir, socksPort, frontPort: socksPort + 1, tunnelPort: socksPort + 2, idleMs, key,
+    here, data, torDir, socksPort, frontPort: socksPort + 1, tunnelPort: socksPort + 2, idleMs, key, searchFallback,
     state: path.join(data, "runtime.json"), lock: pipeName(`${keyFor(data)}-lock`),
   };
 }
@@ -235,7 +304,7 @@ export async function runRuntime(config, callTool) {
   let published = false;
   const nonce = randomBytes(24).toString("hex");
   const controls = new Set();
-  const clients = new Set();
+  const clients = new Map();
   const proxySockets = new Set();
   const election = net.createServer((socket) => socket.destroy());
   const front = net.createServer(proxyConnection);
@@ -339,55 +408,37 @@ export async function runRuntime(config, callTool) {
     ], { cwd: config.torDir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     const current = tor = { child, ready: false, cancel: new AbortController() };
     function exited(code) {
+      const wasReady = current.ready;
+      current.ended = true;
       current.ready = false;
       if (tor === current) manual = false;
-      current.cancel.abort(new Error(`managed Tor exited (${code ?? "signal"})`));
+      // Before readiness, let the child streams drain through "close" for diagnostics.
+      if (wasReady) current.cancel.abort(new Error(`managed Tor exited (${code ?? "signal"})`));
       for (const socket of proxySockets) {
         if (socket.tor === current) socket.destroy();
       }
     }
     child.once("exit", exited);
     current.exited = new Promise((resolve) => child.once("close", (code) => {
-      if (!current.cancel.signal.aborted) exited(code);
+      if (!current.ended) exited(code);
+      current.cancel.abort(new Error(`managed Tor exited (${code ?? "signal"})`));
       if (tor === current) tor = null;
       resolve();
     }));
-    const recent = [];
-    let bootstrap;
-    let failed;
-    const ready = new Promise((resolve, reject) => { bootstrap = resolve; failed = reject; });
-    const timeout = setTimeout(() => failed(new Error(`Tor did not bootstrap within ${BOOT_TIMEOUT / 1000}s`)), BOOT_TIMEOUT);
-    const abort = () => failed(current.cancel.signal.reason);
-    child.once("error", failed);
-    current.cancel.signal.addEventListener("abort", abort, { once: true });
-    for (const stream of [child.stdout, child.stderr]) {
-      let buffer = "";
-      stream.setEncoding("utf8").on("data", (chunk) => {
-        if (current.ready) return;
-        const lines = (buffer + chunk).split(/\r?\n/);
-        buffer = lines.pop().slice(-4096);
-        for (const line of lines) {
-          if (line.includes("Bootstrapped 100%")) bootstrap();
-          else if (/\[(warn|err)\]/.test(line)) {
-            recent.push(line.slice(0, 500));
-            if (recent.length > 4) recent.shift();
-          }
-        }
-      });
-    }
+    child.once("error", (error) => current.cancel.abort(error));
     try {
-      await ready;
+      await waitForBootstrap([child.stdout, child.stderr], current.cancel.signal, {
+        onProgress: (step) => { current.bootstrap = step; },
+      });
       const ports = await Promise.all([config.socksPort, config.tunnelPort].map(portReady));
+      if (current.ended) await current.exited;
       current.cancel.signal.throwIfAborted();
       if (!ports.every(Boolean)) throw new Error("managed Tor listeners did not become ready");
       current.ready = true;
       return current;
     } catch (error) {
       await stopTor();
-      throw new Error([error.message, ...recent].join("\n"));
-    } finally {
-      clearTimeout(timeout);
-      current.cancel.signal.removeEventListener("abort", abort);
+      throw error;
     }
   }
 
@@ -516,6 +567,7 @@ export async function runRuntime(config, callTool) {
     return {
       running: !stopped, torReady: Boolean(tor?.ready), frontPort: config.frontPort,
       runtimePid: process.pid, torPid: tor?.child.pid ?? null, manual, active, sessions: clients.size,
+      ...(!tor?.ready && tor?.bootstrap ? { bootstrap: tor.bootstrap } : {}),
       ...(revertError ? { revertError } : {}),
     };
   }
@@ -547,8 +599,10 @@ export async function runRuntime(config, callTool) {
           return await response(socket, id, status());
         }
         if (command === "session") {
+          const fallback = args.searchFallback ?? "off";
+          if (!["off", "exa"].includes(fallback)) throw new Error("invalid search fallback");
           cancelSessionEnd();
-          clients.add(socket);
+          clients.set(socket, fallback);
           return await response(socket, id, status());
         }
         if (command === "on") {
@@ -576,7 +630,7 @@ export async function runRuntime(config, callTool) {
             torSignal.throwIfAborted();
             session.signal.addEventListener("abort", sessionClosed, { once: true });
             torSignal.addEventListener("abort", torClosed, { once: true });
-            text = await callTool(args.name, args.arguments, request.signal);
+            text = await callTool(args.name, args.arguments, request.signal, clients.get(socket));
           } catch (error) {
             throw request.signal.aborted ? request.signal.reason : error;
           } finally {
@@ -613,6 +667,7 @@ export async function runCli(action, config, script, args) {
   }
   if (args.json) console.log(JSON.stringify(status));
   else if (status.torReady) console.log(`Tor: on (pid ${status.torPid}), ${status.manual ? "started by hand" : "started automatically"}`);
+  else if (status.bootstrap) console.log(`Tor: starting (${status.bootstrap.percent}% ${status.bootstrap.description})`);
   else if (status.running) console.log(`Tor: standby (proxy on ${LOOPBACK}:${status.frontPort})`);
   else console.log("Tor: off");
 }

@@ -16,10 +16,18 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments, [int[]]$AllowedE
     $encoding = [Console]::OutputEncoding
     try {
         [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-        $result = & $Program @Arguments 2>$null
+        $result = if ($Program -eq 'node') { & $Program @Arguments 2>&1 } else { & $Program @Arguments 2>$null }
     } finally { [Console]::OutputEncoding = $encoding }
-    if ($LASTEXITCODE -notin $AllowedExitCodes) { throw "$Program $($Arguments -join ' ') failed (exit $LASTEXITCODE)." }
-    ($result -join "`n").Trim()
+    if ($LASTEXITCODE -notin $AllowedExitCodes) {
+        if ($Program -eq 'node') {
+            $diagnostic = @($result | Where-Object { $_ -is [Management.Automation.ErrorRecord] } |
+                ForEach-Object { $_.ToString() } | Where-Object { $_ -like '[[]tor-web[]] *' -or $_ -match '\[(warn|err)\]' } | Select-Object -First 4)
+            if ($diagnostic.Count -gt 0) { throw ($diagnostic -join [Environment]::NewLine) }
+            throw "Tor runtime $($Arguments[1]) failed (exit $LASTEXITCODE)."
+        }
+        throw "$Program $($Arguments -join ' ') failed (exit $LASTEXITCODE)."
+    }
+    (($result | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] }) -join [Environment]::NewLine).Trim()
 }
 
 function Read-JsonFile([string]$Path) {
@@ -113,7 +121,7 @@ function Get-Setting([string]$Name, [string]$Fallback) {
     $Fallback
 }
 
-$runtimeNames = @('TOR_WEB_DATA_DIR', 'TOR_WEB_SOCKS_PORT', 'TOR_WEB_TOR_DIR', 'TOR_WEB_IDLE_MINUTES', 'TOR_WEB_LOG_HOSTS')
+$runtimeNames = @('TOR_WEB_DATA_DIR', 'TOR_WEB_SOCKS_PORT', 'TOR_WEB_TOR_DIR', 'TOR_WEB_IDLE_MINUTES', 'TOR_WEB_LOG_HOSTS', 'TOR_WEB_SEARCH_FALLBACK')
 function New-ModeEnvironment($Legacy) {
     if ($serviceEnv.OPENCODE_CONFIG_CONTENT -or $env:OPENCODE_CONFIG_CONTENT) {
         throw 'Tor mode needs OPENCODE_CONFIG_CONTENT for its overlay. Move the existing inline settings to your OpenCode config file before enabling Tor mode.'
@@ -129,6 +137,8 @@ function New-ModeEnvironment($Legacy) {
         $idle -le 0 -or [double]::IsNaN($idle) -or ($idle * 60000) -gt [int]::MaxValue) {
         throw 'TOR_WEB_IDLE_MINUTES must be positive and fit in a 32-bit millisecond timer.'
     }
+    $searchFallback = (Get-Setting TOR_WEB_SEARCH_FALLBACK 'off').ToLowerInvariant()
+    if ($searchFallback -notin @('off', 'exa')) { throw 'TOR_WEB_SEARCH_FALLBACK must be off or exa.' }
     $torDir = [IO.Path]::GetFullPath((Get-Setting TOR_WEB_TOR_DIR (Join-Path $HOME 'Desktop\Tor Browser\Browser\TorBrowser\Tor')))
     $template = Join-Path $PSScriptRoot 'opencode.tor.template.json'
     $overlay = [IO.File]::ReadAllText($template).Replace('{{DIR}}', $PSScriptRoot.Replace('\', '/')) | ConvertFrom-Json
@@ -144,6 +154,7 @@ function New-ModeEnvironment($Legacy) {
         TOR_WEB_TOR_DIR = $torDir
         TOR_WEB_IDLE_MINUTES = $idle.ToString([Globalization.CultureInfo]::InvariantCulture)
         TOR_WEB_LOG_HOSTS = Get-Setting TOR_WEB_LOG_HOSTS '0'
+        TOR_WEB_SEARCH_FALLBACK = $searchFallback
     }
     # An older version used this install's generated file as the override.
     if ($Legacy) { $values['OPENCODE_CONFIG'] = '' }
@@ -331,6 +342,7 @@ function Show-ModeStatus {
     $health = Get-RuntimeStatus $active
     if (-not $health.running -or $health.frontPort -ne ([int]$active.TOR_WEB_SOCKS_PORT + 1)) { 'Tor proxy: unavailable' }
     elseif ($health.torReady) { "Tor proxy: ready on 127.0.0.1:$($health.frontPort)" }
+    elseif ($health.bootstrap) { "Tor proxy: starting ($($health.bootstrap.percent)% $($health.bootstrap.description))" }
     else { "Tor proxy: listening on 127.0.0.1:$($health.frontPort), Tor starts on demand" }
 }
 

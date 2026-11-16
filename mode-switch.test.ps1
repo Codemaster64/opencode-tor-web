@@ -63,7 +63,11 @@ function node {
     switch ($args[1]) {
         { $_ -in '--standby', '--on' } {
             $testContext.trace.Add('runtime start')
-            if ($testContext.runtimeError) { $global:LASTEXITCODE = 22; return }
+            if ($testContext.runtimeError) {
+                Write-Error '[tor-web] Tor bootstrap stalled for 120s. Last stage: 10% Connected to a relay.' -ErrorAction Continue
+                $global:LASTEXITCODE = 22
+                return
+            }
             $testContext.runtimeReady = $true
             if ($args[1] -eq '--on') { $testContext.torReady = $true }
         }
@@ -107,6 +111,7 @@ try {
         TOR_WEB_SOCKS_PORT = '12062'
         TOR_WEB_TOR_DIR = (Join-Path $testRoot 'Tor Browser')
         TOR_WEB_IDLE_MINUTES = '0.25'
+        TOR_WEB_SEARCH_FALLBACK = 'exa'
         OPENCODE_CONFIG_CONTENT = $null
     }
     foreach ($key in $fixtureEnvironment.Keys) {
@@ -123,6 +128,7 @@ try {
         Assert-That ($envAfter.TOR_WEB_SOCKS_PORT -ceq '12062') 'The service did not receive the SOCKS port.'
         Assert-That ($envAfter.TOR_WEB_TOR_DIR -ceq $fixtureEnvironment.TOR_WEB_TOR_DIR) 'The service did not receive the Tor path.'
         Assert-That ($envAfter.TOR_WEB_IDLE_MINUTES -ceq '0.25') 'The service did not receive the idle timeout.'
+        Assert-That ($envAfter.TOR_WEB_SEARCH_FALLBACK -ceq 'exa') 'The service did not receive the enabled search fallback.'
         Assert-That ($envAfter.TOR_WEB_DATA_DIR -ceq $dataDir) 'The service did not receive the runtime data directory.'
         Assert-That (($output -join ' ') -notmatch 'proxy-test-credential') 'The switch exposed the previous proxy credential.'
     }
@@ -142,7 +148,7 @@ try {
         $testContext.runtimeError = $true
         $failureMessage = ''
         try { & $modeScript on | Out-Null } catch { $failureMessage = $_.Exception.Message }
-        Assert-That ($failureMessage -match 'exit 22') 'Tor startup failure was not reported.'
+        Assert-That ($failureMessage -match 'Last stage: 10% Connected to a relay') 'Tor startup lost the bootstrap diagnostic.'
         Assert-That ($testContext.serviceRunning -and $testContext.trace -notcontains 'start' -and $testContext.trace -notcontains 'stop') 'A failed runtime interrupted the service.'
         Assert-That ([IO.File]::ReadAllText($serviceFile) -ceq $serviceBefore) 'Tor startup failure changed service settings.'
     }

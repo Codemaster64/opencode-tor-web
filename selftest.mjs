@@ -73,6 +73,7 @@ Object.assign(env, {
   TOR_WEB_TEST_OPENCODE: openCode,
 });
 if (process.env.TOR_WEB_TOR_DIR) env.TOR_WEB_TOR_DIR = process.env.TOR_WEB_TOR_DIR;
+if (process.env.TOR_WEB_SEARCH_FALLBACK) env.TOR_WEB_SEARCH_FALLBACK = process.env.TOR_WEB_SEARCH_FALLBACK;
 
 let evidence = { payload: "", called: false, shellListed: false };
 let scenario = "tor";
@@ -186,7 +187,7 @@ function run(exe, args, { timeout = 30000, allowFailure = false } = {}) {
 const oc = (args, opts) => run(openCode, args, opts);
 const mode = (command) => run("powershell.exe", [
   "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(here, "tor-web.ps1"), command,
-], { timeout: 160000 });
+], { timeout: 215000 });
 const runtime = (command) => run(process.execPath, [path.join(here, "server.mjs"), command]);
 async function exerciseOpenCode(probe) {
   scenario = probe;
@@ -243,7 +244,12 @@ try {
   const toolOutput = (await exerciseOpenCode("tor")).replace(/\\+["]/g, '"');
   assert.match(toolOutput, /TOR_MCP[^\n]*"IsTor":\s*true/i, "MCP did not confirm the Tor exit: " + toolOutput.slice(0, 1600));
   const resultLine = toolOutput.split("\n").find((line) => line.startsWith("TOR_SEARCH ")) ?? "";
-  assert.match(resultLine, /TOR_SEARCH "[^"]*1\. .*https?:\/\/.*via DuckDuckGo/i, "OpenCode did not receive DuckDuckGo results: " + resultLine.slice(0, 900));
+  const exaFallback = env.TOR_WEB_SEARCH_FALLBACK?.toLowerCase() === "exa";
+  const searchPattern = exaFallback
+    ? /TOR_SEARCH ".*https?:\/\/.*via (?:DuckDuckGo|Exa \(fallback\))/i
+    : /TOR_SEARCH "[^"]*1\. .*https?:\/\/.*via DuckDuckGo/i;
+  assert.match(resultLine, searchPattern, "OpenCode did not receive search results: " + resultLine.slice(0, 900));
+  console.log(/via Exa \(fallback\)/.test(resultLine) ? "Search used Exa fallback over Tor." : "Search used DuckDuckGo over Tor.");
   assert.match(toolOutput, /TOR_FETCH[^\n]*Example Domain/i, "MCP page fetch failed");
   assert.match(toolOutput, /TOR_CODE_FETCH[^\n]*"IsTor":\s*true/i, "Code Mode fetch did not confirm the Tor exit");
   const shellOutput = await exerciseOpenCode("shell");
@@ -251,7 +257,7 @@ try {
     assert.match(shellOutput, /blocked|denied/i, "The available shell tool did not report a denial");
     assert.doesNotMatch(shellOutput, /^tor-web-shell-marker$/m, "The shell command ran in Tor mode");
   }
-  console.log("MCP Tor exit, DuckDuckGo search, page fetch, Code Mode Tor exit, and shell denial verified.");
+  console.log("MCP Tor exit, search, page fetch, Code Mode Tor exit, and shell denial verified.");
   await mode("off");
   const before = await oc(["service", "get", "env", "NO_PROXY"]);
   assert.match(before, /\blocalhost\b/);

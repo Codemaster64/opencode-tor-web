@@ -29,7 +29,7 @@ async function fixture(t, { isolatedInstall = false } = {}) {
   if (isolatedInstall) {
     const directory = path.join(data, "install");
     await fs.mkdir(directory);
-    for (const file of ["server.mjs", "runtime.mjs", "network.mjs", "duckduckgo.mjs"]) {
+    for (const file of ["server.mjs", "runtime.mjs", "network.mjs", "duckduckgo.mjs", "search.mjs"]) {
       await fs.copyFile(path.join(path.dirname(server), file), path.join(directory, file));
     }
     entry = path.join(directory, "server.mjs");

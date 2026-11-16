@@ -39,7 +39,15 @@ const results = await tools["tor-web"].tor_search({ query: "Tor Project", max_re
 return results
 ```
 
-Use `tor_fetch({ url: "https://example.com/" })` for readable page text and `tor_status({})` to check Tor exit status. Search uses DuckDuckGo's HTML service through Tor. The DuckDuckGo onion service is preferred, and the public DuckDuckGo HTML service is also reached through Tor when used. An explicit access challenge is reported to the caller.
+Use `tor_fetch({ url: "https://example.com/" })` for readable page text and `tor_status({})` to check Tor exit status. Search uses DuckDuckGo's HTML service through Tor. The DuckDuckGo onion service is preferred, and the public DuckDuckGo HTML service is also reached through Tor when used. An access challenge stops the DuckDuckGo request. The tool can then use Exa’s hosted search MCP over Tor if you explicitly enable that fallback. No Exa API key is required, and Exa receives the search query when it is used.
+
+```powershell
+tor-web off
+$env:TOR_WEB_SEARCH_FALLBACK = 'exa'
+tor-web on
+```
+
+Set `TOR_WEB_SEARCH_FALLBACK` to `off` and switch off and on again to return to DuckDuckGo only. Configure it as a user environment variable if you need it across terminals.
 
 ## Routing and limits
 
@@ -55,7 +63,12 @@ Use `tor_fetch({ url: "https://example.com/" })` for readable page text and `tor
 | `TOR_WEB_TOR_DIR` | `~\Desktop\Tor Browser\Browser\TorBrowser\Tor` | Folder containing Tor Browser's `tor.exe`. |
 | `TOR_WEB_SOCKS_PORT` | `9062` | Loopback SOCKS port. The front proxy uses port +1 and Tor's HTTP tunnel uses +2. |
 | `TOR_WEB_IDLE_MINUTES` | `10` | Idle timeout for automatically started Tor. |
+| `TOR_WEB_SEARCH_FALLBACK` | `off` | Set to `exa` to use Exa after a DuckDuckGo challenge, rate limit or availability failure. |
 | `TOR_WEB_LOG_HOSTS` | unset | Set to `1` to enable destination logging in `data/proxy.log`. |
+
+## Startup diagnostics
+
+`tor-web on` allows up to two minutes without Tor bootstrap progress and has a three-minute total limit. If progress stalls, the error lists the last bootstrap stage reached. `tor-web status` also shows the bootstrap stage during on-demand starts after Tor mode is enabled. The previous OpenCode service settings are kept if startup fails.
 
 ## Tests
 

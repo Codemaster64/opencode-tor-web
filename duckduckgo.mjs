@@ -27,6 +27,10 @@ function attributes(text) {
   return values;
 }
 
+function providerError(message, code) {
+  return Object.assign(new Error(message), { code });
+}
+
 function allowRedirect(target) {
   return target.protocol === "https:" && PROVIDER_HOSTS.has(target.hostname)
     && !target.port && !target.username && !target.password;
@@ -141,11 +145,12 @@ export async function searchDuckDuckGo(query, max, torFetch) {
     }
     const source = finalUrl.hostname === ONION ? "DuckDuckGo (.onion)" : "DuckDuckGo";
     const { status, body } = response;
+    if (status === 429) throw providerError(source + " denied access (HTTP 429).", "ERR_DDG_UNAVAILABLE");
     if (ACCESS_DENIED.has(status)) throw new Error(source + " denied access (HTTP " + status + ").");
-    if (status === 202) throw new Error(source + " returned a search challenge (HTTP 202).");
+    if (status === 202) throw providerError(source + " returned a search challenge (HTTP 202).", "ERR_DDG_CHALLENGE");
 
     const { results, noResults, blocked } = parseResults(body.toString("utf8"), finalUrl, limit);
-    if (blocked) throw new Error(source + " returned a search challenge (HTTP " + status + ").");
+    if (blocked) throw providerError(source + " returned a search challenge (HTTP " + status + ").", "ERR_DDG_CHALLENGE");
     if (status !== 200) {
       failures.push(source + " HTTP " + status);
       continue;
@@ -159,5 +164,5 @@ export async function searchDuckDuckGo(query, max, torFetch) {
     failures.push(source + " did not return recognizable search results");
   }
 
-  throw new Error("DuckDuckGo search unavailable over Tor (" + failures.join("; ") + ").");
+  throw providerError("DuckDuckGo search unavailable over Tor (" + failures.join("; ") + ").", "ERR_DDG_UNAVAILABLE");
 }

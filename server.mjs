@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { searchDuckDuckGo } from "./duckduckgo.mjs";
+import { searchWeb } from "./search.mjs";
 import { requestOnce } from "./network.mjs";
 import { configuration, openRuntime, runCli, runRuntime } from "./runtime.mjs";
 
@@ -33,7 +33,7 @@ function htmlToText(html) {
 }
 
 const tools = [
-  { name: "tor_search", description: "Search the web with DuckDuckGo through the Tor network.",
+  { name: "tor_search", description: "Search DuckDuckGo over Tor, with Exa only if the user configured it as a fallback.",
     inputSchema: { type: "object", properties: { query: { type: "string" }, max_results: { type: "number", description: "default 10" } }, required: ["query"] } },
   { name: "tor_fetch", description: "Fetch a URL (HTTP, HTTPS or .onion) through the Tor network and return readable text.",
     inputSchema: { type: "object", properties: { url: { type: "string" }, raw: { type: "boolean", description: "return the raw body instead of text" },
@@ -57,7 +57,12 @@ function createToolHandler(config) {
     for (let hop = 0; hop < 6; hop++) {
       const result = await requestOnce(url, options, { socksPort: config.socksPort, userAgent: agent, signal });
       if (result.status < 300 || result.status >= 400 || !result.headers.location) return { ...result, url };
-      const target = new URL(result.headers.location, url);
+      let target;
+      try { target = new URL(result.headers.location, url); }
+      catch (error) {
+        if (!options?.allowRedirect) throw error;
+        throw Object.assign(new Error("invalid search redirect", { cause: error }), { code: "ERR_TOR_REDIRECT_REJECTED" });
+      }
       if (options?.allowRedirect && !options.allowRedirect(target)) {
         throw Object.assign(new Error("unexpected search redirect"), { code: "ERR_TOR_REDIRECT_REJECTED" });
       }
@@ -67,11 +72,11 @@ function createToolHandler(config) {
     throw new Error("too many redirects");
   }
 
-  return async (name, args, signal) => {
+  return async (name, args, signal, searchFallback) => {
     if (name === "tor_search") {
       const fetch = (url, options) => torFetch(url, options, signal);
       const max = Math.max(1, Math.min(Math.trunc(Number(args.max_results)) || 10, 30));
-      const { engine, text } = await searchDuckDuckGo(String(args.query), max, fetch);
+      const { engine, text } = await searchWeb(String(args.query), max, fetch, searchFallback);
       return `${text}\n\n(via ${engine} over Tor)`;
     }
     if (name === "tor_fetch") {
@@ -102,7 +107,7 @@ function runMcp(config) {
       const { client } = await openRuntime(config, { script, start: true });
       try {
         if (closed) throw new Error("MCP session closed");
-        await client.request("session", { frontPort: config.frontPort });
+        await client.request("session", { frontPort: config.frontPort, searchFallback: config.searchFallback });
         client.socket.once("close", () => { connecting = undefined; });
         return client;
       } catch (error) {
