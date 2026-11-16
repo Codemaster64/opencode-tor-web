@@ -3,3 +3,5 @@ data/
 # per-machine: generated from opencode.tor.template.json, and the user's default
 opencode.tor.json
 settings.json
+tor-web-mode.json
+tor-web.lock

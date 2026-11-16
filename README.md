@@ -1,120 +1,74 @@
 # opencode-tor-web
 
-Route [opencode](https://opencode.ai)'s internet traffic through **Tor**: web search, page fetches, the agent's
-Code Mode `fetch()`, shell tools, the model list and cloud model gateways. Local models stay local. One command
-switches it on and off, and opencode's own web tools work normally when it is off.
+Use DuckDuckGo search and page fetch through Tor in [OpenCode](https://opencode.ai) on Windows. The OpenCode background service also gets an HTTP CONNECT proxy for proxy-aware HTTPS requests, including Code Mode `fetch()`. Loopback model endpoints remain reachable directly.
 
-Windows. Zero npm dependencies. Uses the `tor.exe` that ships with Tor Browser.
-
-```text
-                              ┌────────────────────── opencode (v2) ──────────────────────┐
-  web search / fetch  ───────►│ tor-web MCP tools ── SOCKS5 :9062 ─┐                       │
-  Code Mode fetch()   ───────►│ HTTPS_PROXY :9063 ─────────────────┼──► tor.exe ──► Tor ──► internet
-  shell: curl, pwsh 7,        │   (tor-web front proxy, starts Tor │    (HTTP CONNECT :9064,│
-  python, node, git, pip ────►│    on the first connection)        │     IsolateDestAddr)   │
-  model list, cloud APIs ────►│                                    ┘                       │
-  local models (localhost) ──►│ direct, never leaves the machine                           │
-                              └────────────────────────────────────────────────────────────┘
-```
-
-## What it does
-
-- **Tools for the agent:** `tor_search` (Exa's agent search API, with Brave and DuckDuckGo's .onion as fallbacks),
-  `tor_fetch` (any https or .onion URL, returned as readable text) and `tor_status` (asks check.torproject.org).
-- **Everything else goes through Tor too.** opencode's background service gets `HTTPS_PROXY`, so Code Mode's
-  `fetch()` and proxy-aware shell tools (curl, PowerShell 7, Python, Node with `NODE_USE_ENV_PROXY`, git, pip, npm)
-  exit via Tor. opencode's own `webfetch`/`websearch` tools are switched off in Tor mode.
-- **Fails closed.** If Tor is not running or not reachable, requests error out; nothing falls back to a direct
-  connection. DNS is resolved by Tor (hostnames go over SOCKS5 / HTTP CONNECT), so lookups don't leak either.
-- **Per-site circuits.** Both Tor ports use `IsolateDestAddr`: different sites get different exits, so they can't link
-  your visits to each other by IP.
-- **Blends in.** `tor_fetch` sends the installed Tor Browser's exact user agent.
-- **No local trail.** Visited hosts are not logged (opt in with `TOR_WEB_LOG_HOSTS=1`).
-- **Asks before risky shell commands.** opencode prompts before commands that may connect directly: raw sockets, DNS
-  lookups, ping, ssh, `git push/pull/fetch/clone`, `Invoke-WebRequest`, and similar.
-- **Tor runs only when needed:** it starts on the first request and stops after 10 idle minutes. Started by hand with
-  `tor-web on`, it stays up until `tor-web off`. Either way it stops when opencode closes.
-
-## Commands
-
-| Command | |
-|---|---|
-| `tor-web on` | Tor mode: opencode reaches the internet only through Tor. Starts Tor now. |
-| `tor-web off` | Normal opencode: its own web search and fetch, direct internet. Stops Tor. |
-| `tor-web status` | Current mode, the default, and whether Tor is running. |
-| `tor-web default on` | Tor mode stays on across opencode starts until `tor-web off` (default). |
-| `tor-web default off` | Per session: opencode starts normal; `tor-web on` lasts until opencode closes. |
-
-Switching restarts opencode's background service; open opencode windows reconnect.
+Tor mode blocks the agent's shell, browser, and built-in web tools. Use `tor_search`, `tor_fetch`, and `tor_status` in Code Mode. This avoids depending on the environment of a previously opened terminal session.
 
 ## Install
 
-Requirements: Windows, [opencode](https://opencode.ai) v2 (tested with 2.0.31), Node.js 18+ (tested with 24),
-PowerShell 7 (`winget install Microsoft.PowerShell`) and [Tor Browser](https://www.torproject.org/download/)
-(its `tor.exe` is used; Tor Browser doesn't need to be open).
+Requirements: Windows, OpenCode v2 (tested with 2.0.31), Node.js 24 or later, PowerShell, and [Tor Browser](https://www.torproject.org/download/). Tor Browser can stay closed. Its bundled `tor.exe` runs with separate data.
 
 ```powershell
 git clone https://github.com/Codemaster64/opencode-tor-web "$HOME\.config\opencode\tor-web"
+New-Item -ItemType Directory -Force (Split-Path $PROFILE) | Out-Null
 Add-Content $PROFILE 'function tor-web { & "$HOME\.config\opencode\tor-web\tor-web.ps1" @args }'
 . $PROFILE
 tor-web on
 ```
 
-If Tor Browser isn't on your Desktop, point at its `Tor` folder before switching on:
-`[Environment]::SetEnvironmentVariable('TOR_WEB_TOR_DIR', 'D:\Tor Browser\Browser\TorBrowser\Tor', 'User')`.
+If Tor Browser is installed elsewhere, set `TOR_WEB_TOR_DIR` to its `Browser\TorBrowser\Tor` directory in your current PowerShell session before running `tor-web on`. Use a user environment variable to remember it across terminals.
 
-`tor-web on` writes `opencode.tor.json` (from `opencode.tor.template.json`) for your machine and loads it through
-`OPENCODE_CONFIG`, so your own `opencode.json` is never edited. Run `tor-web on` again after PowerShell updates
-(the Store version of PowerShell lives in a versioned folder).
+| Command | Behavior |
+|---|---|
+| `tor-web on` | Verifies that the local proxy and Tor can start, then enables Tor mode. |
+| `tor-web off` | Restores the prior OpenCode service settings and stops this installation's Tor runtime. |
+| `tor-web status` | Checks the effective Tor mode settings separately from the runtime and Tor connection status. |
+| `tor-web default on` | Keep Tor mode enabled across OpenCode launches. |
+| `tor-web default off` | Restore the previous settings after the last Tor MCP session disconnects and active requests finish. |
 
-## How it works
+If OpenCode was running before a switch, the script starts it again with the new settings. Your normal configuration file stays in place. Keep the same installation directory and OpenCode profile when turning the mode off.
 
-- `server.mjs` is an MCP server (stdio, no dependencies). opencode v2 exposes MCP tools inside **Code Mode**: the
-  model calls `tools["tor-web"].tor_search({ query })` from its `execute` tool. (Setting `codemode: false` hides
-  them completely in v2.)
-- It also listens on `127.0.0.1:9063`, the port opencode's `HTTPS_PROXY` points at. The first connection starts
-  `tor.exe` (detached, own data directory, `__OwningControllerProcess` = the opencode service) and the connection is
-  spliced onto Tor's HTTP CONNECT port 9064. The tools use Tor's SOCKS port 9062.
-- `tor-web.ps1` switches the mode by setting or removing `OPENCODE_CONFIG`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`
-  and `NODE_USE_ENV_PROXY` on opencode's background service (`opencode service set env`), and sets opencode's shell
-  to PowerShell 7, because Windows PowerShell 5.1's `Invoke-WebRequest` ignores the proxy.
-- Lifetime bookkeeping lives in `data/`: Tor's pid, whether it was started by hand, the last activity time and
-  whether an opencode window has been seen this session.
+If you are updating an older installation, run `tor-web off` with the old version before replacing its files so it releases the original Tor ports.
 
-## Limits
+## Search and fetch
 
-Tor hides **where requests come from**, not what they say:
+Inside the agent's `execute` tool:
 
-- The search provider (Exa) sees your search queries, just not your IP.
-- Cloud model gateways still know your account through its API key.
-- Code Mode's `fetch()` identifies itself as Bun, not as a browser.
-- Shell tools that ignore `HTTPS_PROXY` (raw sockets, Windows PowerShell 5.1, ssh, ping) would connect directly.
-  opencode asks before the common ones, but that check matches command text and isn't airtight.
-- Plain `http://` is refused by Tor's HTTP CONNECT port; use https:// or .onion.
-- `opencode run --standalone` doesn't use the background service, so it isn't proxied.
-- Small local models (around 9B) are poor at calling Code Mode tools; larger ones (27B) do fine.
+```javascript
+const results = await tools["tor-web"].tor_search({ query: "Tor Project", max_results: 5 })
+return results
+```
 
-This is a convenience layer, not a hardened anonymity system. For high-risk use, use Tor Browser or Tails.
+Use `tor_fetch({ url: "https://example.com/" })` for readable page text and `tor_status({})` to check Tor exit status. Search uses DuckDuckGo's HTML service through Tor. The DuckDuckGo onion service is preferred, and the public DuckDuckGo HTML service is also reached through Tor when used. An explicit access challenge is reported to the caller.
+
+## Routing and limits
+
+- The MCP tools use the managed Tor SOCKS listener. Proxy-aware OpenCode service requests use a separate HTTP CONNECT listener on loopback. A missing proxy or Tor connection produces a request error on these paths.
+- This is an application proxy, with coverage limited to the above paths. OpenCode started in standalone mode, external tools, custom plugins, other MCP integrations and programs that ignore proxy settings have their own network behavior. Tor mode does not install operating system network isolation.
+- HTTPS connections through the HTTP CONNECT proxy are supported. The MCP fetch tool handles public HTTP(S) and onion URLs over SOCKS. Prefer HTTPS for public services.
+- Tor changes the network route. DuckDuckGo sees the query, API providers can recognize an account, and OpenCode can record tool calls and results in session history. This setup does not provide Tor Browser's fingerprinting protections or guarantee unique exit IPs per destination.
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TOR_WEB_TOR_DIR` | `~\Desktop\Tor Browser\Browser\TorBrowser\Tor` | Folder containing Tor Browser's `tor.exe`. |
+| `TOR_WEB_SOCKS_PORT` | `9062` | Loopback SOCKS port. The front proxy uses port +1 and Tor's HTTP tunnel uses +2. |
+| `TOR_WEB_IDLE_MINUTES` | `10` | Idle timeout for automatically started Tor. |
+| `TOR_WEB_LOG_HOSTS` | unset | Set to `1` to enable destination logging in `data/proxy.log`. |
 
 ## Tests
 
 ```powershell
-node selftest.mjs   # proxy port, tor_status, tor_search and tor_fetch all exit via Tor (~10 s)
-node idletest.mjs   # lifetime rules with the idle stop cut to 15 s; stops/starts the opencode service (~3 min)
-                    # set TOR_WEB_TEST_MODEL (e.g. a local model id) to also test "Tor stops when opencode closes"
+node --test            # offline JavaScript regression tests
+.\mode-switch.test.ps1 # offline Windows switch regression tests
+node selftest.mjs    # real OpenCode + Tor + DuckDuckGo in a temporary Windows profile
 ```
 
-## Configuration
-
-| Variable | Default | |
-|---|---|---|
-| `TOR_WEB_TOR_DIR` | `~\Desktop\Tor Browser\Browser\TorBrowser\Tor` | folder with `tor.exe` |
-| `TOR_WEB_SOCKS_PORT` | `9062` | SOCKS port; proxy is +1, Tor's HTTP CONNECT +2 |
-| `TOR_WEB_IDLE_MINUTES` | `10` | idle stop for automatically started Tor |
-| `TOR_WEB_LOG_HOSTS` | off | log each proxied host to opencode's log |
+The smoke test uses a loopback model fixture to invoke the tools through OpenCode. It requires a working Tor connection. Set `TOR_WEB_TEST_OPENCODE` to the OpenCode executable if it was installed outside the default npm location.
 
 ## Uninstall
 
-`tor-web off`, delete the folder and remove the `tor-web` line from your PowerShell profile.
+Run `tor-web off`, remove the `tor-web` profile function, and delete the installation folder.
 
-Not affiliated with the Tor Project or opencode.
+This project is independent of the Tor Project, DuckDuckGo, and OpenCode.
