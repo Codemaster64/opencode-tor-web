@@ -1,0 +1,175 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "websearch": false,
+  "shell": "{{PWSH}}",
+  "instructions": [
+    "{{DIR}}/INSTRUCTIONS.md"
+  ],
+  "permissions": [
+    {
+      "action": "webfetch",
+      "resource": "*",
+      "effect": "deny"
+    },
+    {
+      "action": "websearch",
+      "resource": "*",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "*http://*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*https://*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*curl*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*wget*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*Invoke-WebRequest*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*Invoke-RestMethod*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*urllib*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*requests.*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*fetch(*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*socket*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*WebClient*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*HttpClient*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*BitsTransfer*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*bitsadmin*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*certutil*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*nslookup*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*Resolve-DnsName*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*Test-NetConnection*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*Test-Connection*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "ping *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*tracert*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*ssh *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*scp *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*ftp *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*git push*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*git pull*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*git fetch*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*git clone*",
+      "effect": "ask"
+    }
+  ],
+  "mcp": {
+    "servers": {
+      "tor-web": {
+        "type": "local",
+        "command": [
+          "node",
+          "{{DIR}}/server.mjs"
+        ],
+        "timeout": {
+          "startup": 30000,
+          "execution": 240000
+        }
+      }
+    }
+  }
+}
